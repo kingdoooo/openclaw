@@ -67,6 +67,7 @@ const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
 
 export async function runReplyAgent(params: {
   commandBody: string;
+  rawBody?: string;
   followupRun: FollowupRun;
   queueKey: string;
   resolvedQueue: QueueSettings;
@@ -403,6 +404,7 @@ export async function runReplyAgent(params: {
     const runStartedAt = Date.now();
     const runOutcome = await runAgentTurnWithFallback({
       commandBody,
+      rawBody: params.rawBody,
       followupRun,
       sessionCtx,
       opts,

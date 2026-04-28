@@ -23,6 +23,57 @@ function requiresDefaultSampling(modelId: string): boolean {
   return modelId.includes("claude-opus-4-7");
 }
 
+/**
+ * Models that use Anthropic's adaptive-thinking path (thinking.type='adaptive'
+ * + output_config.effort) instead of the legacy budget_tokens mode.
+ *
+ * AWS Bedrock rejects the legacy budget_tokens form for Opus 4.7 with a 400
+ * ValidationException, so we must emit the adaptive payload for any of these
+ * model IDs. Matches pi-ai's own whitelist in streamSimpleAnthropic.
+ */
+function supportsAdaptiveThinking(modelId: string): boolean {
+  return (
+    modelId.includes("opus-4-7") ||
+    modelId.includes("opus-4.7") ||
+    modelId.includes("opus-4-6") ||
+    modelId.includes("opus-4.6") ||
+    modelId.includes("sonnet-4-6") ||
+    modelId.includes("sonnet-4.6")
+  );
+}
+
+/**
+ * Map pi-ai ThinkingLevel to Anthropic adaptive-thinking effort value.
+ * Mirrors pi-ai's mapThinkingLevelToEffort so Mantle stays in sync with the
+ * direct Anthropic path:
+ *   - xhigh -> "xhigh" on Opus 4.7, "max" on Opus 4.6, else "high"
+ *   - high -> "high", medium -> "medium", low/minimal -> "low"
+ */
+function mapThinkingLevelToEffort(
+  level: NonNullable<SimpleStreamOptions["reasoning"]>,
+  modelId: string,
+): "low" | "medium" | "high" | "xhigh" | "max" {
+  switch (level) {
+    case "minimal":
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "xhigh":
+      if (modelId.includes("opus-4-6") || modelId.includes("opus-4.6")) {
+        return "max";
+      }
+      if (modelId.includes("opus-4-7") || modelId.includes("opus-4.7")) {
+        return "xhigh";
+      }
+      return "high";
+    default:
+      return "high";
+  }
+}
+
 function mergeHeaders(
   ...headerSources: Array<Record<string, string> | undefined>
 ): Record<string, string> {
@@ -103,7 +154,10 @@ export function createMantleAnthropicStreamFn(deps?: {
     // Staged plugin runtime deps can give this plugin a distinct physical SDK copy.
     // The client API is the same, but the SDK class private field makes types nominal.
     const streamClient = client as unknown as AnthropicStreamClient;
-    if (!options?.reasoning || requiresDefaultSampling(model.id)) {
+
+    // No reasoning requested: disable thinking. Temperature is already cleared
+    // by buildMantleAnthropicBaseOptions for models that require default sampling.
+    if (!options?.reasoning) {
       return stream(model as Model<"anthropic-messages">, context, {
         ...base,
         client: streamClient,
@@ -111,6 +165,20 @@ export function createMantleAnthropicStreamFn(deps?: {
       });
     }
 
+    // Adaptive-thinking models (Opus 4.7 / 4.6, Sonnet 4.6) must use
+    // thinking.type='adaptive' + output_config.effort. Bedrock rejects the
+    // legacy budget_tokens form on these models with 400 ValidationException.
+    if (supportsAdaptiveThinking(model.id)) {
+      const effort = mapThinkingLevelToEffort(options.reasoning, model.id);
+      return stream(model as Model<"anthropic-messages">, context, {
+        ...base,
+        client: streamClient,
+        thinkingEnabled: true,
+        effort,
+      });
+    }
+
+    // Legacy models: keep budget_tokens-based thinking.
     const adjusted = adjustMaxTokensForThinking(
       base.maxTokens || 0,
       model.maxTokens,

@@ -23,6 +23,14 @@ function createTestModel(): Model<Api> {
   } as Model<Api>;
 }
 
+function createModelWithId(id: string, name: string = id): Model<Api> {
+  return {
+    ...createTestModel(),
+    id,
+    name,
+  } as Model<Api>;
+}
+
 function createTestDeps() {
   return {
     createClient: vi.fn((options: unknown) => ({ options }) as never),
@@ -73,7 +81,7 @@ describe("createMantleAnthropicStreamFn", () => {
     );
   });
 
-  it("omits unsupported Opus 4.7 sampling and reasoning overrides", () => {
+  it("emits adaptive thinking + effort for Opus 4.7 with reasoning", () => {
     const model = createTestModel();
     const context = { messages: [] };
     const deps = createTestDeps();
@@ -85,14 +93,128 @@ describe("createMantleAnthropicStreamFn", () => {
       reasoning: "high",
     });
 
-    expect(deps.stream).toHaveBeenCalledWith(
-      model,
-      context,
-      expect.objectContaining({
-        temperature: undefined,
-        thinkingEnabled: false,
-      }),
-    );
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      temperature: undefined,
+      thinkingEnabled: true,
+      effort: "high",
+    });
+    expect(opts).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
+  it("maps Opus 4.7 xhigh reasoning to effort:'xhigh'", () => {
+    const model = createTestModel();
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "xhigh",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      thinkingEnabled: true,
+      effort: "xhigh",
+    });
+    expect(opts).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
+  it("maps Opus 4.6 xhigh reasoning to effort:'max'", () => {
+    const model = createModelWithId("anthropic.claude-opus-4-6", "Claude Opus 4.6");
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "xhigh",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      thinkingEnabled: true,
+      effort: "max",
+    });
+    expect(opts).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
+  it("maps Sonnet 4.6 medium reasoning to effort:'medium'", () => {
+    const model = createModelWithId("anthropic.claude-sonnet-4-6", "Claude Sonnet 4.6");
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "medium",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      thinkingEnabled: true,
+      effort: "medium",
+    });
+    expect(opts).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
+  it("maps Opus 4.7 minimal reasoning to effort:'low'", () => {
+    const model = createTestModel();
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "minimal",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      thinkingEnabled: true,
+      effort: "low",
+    });
+  });
+
+  it("keeps legacy Claude 3.5 Sonnet on budget_tokens thinking path", () => {
+    const model = createModelWithId("anthropic.claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet");
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "high",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts.thinkingEnabled).toBe(true);
+    expect(opts.thinkingBudgetTokens).toBe(16384);
+    expect(opts).not.toHaveProperty("effort");
+    // maxTokens should grow to fit the thinking budget (base + budget).
+    expect(opts.maxTokens).toBeGreaterThan(16384);
+  });
+
+  it("follows pi-ai includes() behavior: 'opus-4-70' substring also hits adaptive path", () => {
+    // Document current behavior: supportsAdaptiveThinking uses
+    // modelId.includes("opus-4-7") to mirror pi-ai's own whitelist. A
+    // hypothetical "opus-4-70" id would therefore also be treated as
+    // adaptive-capable. This is a known, intentional limitation kept in sync
+    // with pi-ai; revisit only when pi-ai tightens its matcher.
+    const model = createModelWithId("anthropic.claude-opus-4-70", "Hypothetical lookalike");
+    const context = { messages: [] };
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, context, {
+      apiKey: "bedrock-bearer-token",
+      reasoning: "xhigh",
+    });
+
+    const opts = deps.stream.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts.thinkingEnabled).toBe(true);
+    expect(opts.effort).toBe("xhigh");
   });
 
   it("normalizes Mantle provider URLs to the Anthropic endpoint", () => {

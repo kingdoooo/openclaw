@@ -314,6 +314,36 @@ describe("amazon-bedrock provider plugin", () => {
     expect(levelIds).toEqual(["off", "minimal", "low", "medium", "high"]);
   });
 
+  it("keeps Sonnet 4.6 on the adaptive-default profile", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    const profile = provider.resolveThinkingProfile?.({
+      provider: "amazon-bedrock",
+      modelId: "anthropic.claude-sonnet-4-6",
+    } as never);
+    const levelIds = (profile?.levels ?? []).map((entry) => entry.id);
+    expect(levelIds).toContain("adaptive");
+    expect(levelIds).not.toContain("xhigh");
+    expect(levelIds).not.toContain("max");
+    expect(profile?.defaultLevel).toBe("adaptive");
+  });
+
+  it("does not misclassify Opus 4.7 lookalike ids (e.g. claude-opus-4-70)", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    // A hypothetical "4-70" id must NOT be treated as 4.7. Without the
+    // boundary guard in claudeOpus47ModelRe a naive substring check would
+    // incorrectly enable xhigh/adaptive/max for this model.
+    const profile = provider.resolveThinkingProfile?.({
+      provider: "amazon-bedrock",
+      modelId: "anthropic.claude-opus-4-70",
+    } as never);
+    const levelIds = (profile?.levels ?? []).map((entry) => entry.id);
+    expect(levelIds).not.toContain("xhigh");
+    expect(levelIds).not.toContain("max");
+    expect(profile?.defaultLevel).toBeUndefined();
+  });
+
   it("owns Anthropic-style replay policy for Claude Bedrock models", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 

@@ -253,6 +253,67 @@ describe("amazon-bedrock provider plugin", () => {
     });
   });
 
+  it("exposes full Opus 4.7 thinking profile (xhigh + adaptive + max) on Bedrock", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    // Cover base id, global inference, cross-region inference, and dotted variant.
+    const opus47Ids = [
+      "anthropic.claude-opus-4-7",
+      "global.anthropic.claude-opus-4-7",
+      "us.anthropic.claude-opus-4-7",
+      "eu.anthropic.claude-opus-4-7",
+      "claude-opus-4.7",
+    ];
+    for (const modelId of opus47Ids) {
+      const profile = provider.resolveThinkingProfile?.({
+        provider: "amazon-bedrock",
+        modelId,
+      } as never);
+      expect(profile, `profile for ${modelId}`).toMatchObject({
+        // AWS model card: thinking is off unless caller opts in via
+        // thinking.type:'adaptive'; match the Anthropic direct-API default.
+        defaultLevel: "off",
+      });
+      const levelIds = (profile?.levels ?? []).map((entry) => entry.id);
+      expect(levelIds, `levels for ${modelId}`).toEqual([
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "adaptive",
+        "max",
+      ]);
+    }
+  });
+
+  it("keeps Opus 4.6 on the adaptive-default profile (no xhigh/max regression)", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    const profile = provider.resolveThinkingProfile?.({
+      provider: "amazon-bedrock",
+      modelId: "us.anthropic.claude-opus-4-6-v1",
+    } as never);
+    const levelIds = (profile?.levels ?? []).map((entry) => entry.id);
+    expect(profile?.defaultLevel).toBe("adaptive");
+    expect(levelIds).toContain("adaptive");
+    expect(levelIds).not.toContain("xhigh");
+    expect(levelIds).not.toContain("max");
+  });
+
+  it("does not expose adaptive/xhigh for legacy Anthropic Bedrock models", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    const profile = provider.resolveThinkingProfile?.({
+      provider: "amazon-bedrock",
+      modelId: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    } as never);
+    const levelIds = (profile?.levels ?? []).map((entry) => entry.id);
+    expect(profile?.defaultLevel).toBeUndefined();
+    expect(levelIds).toEqual(["off", "minimal", "low", "medium", "high"]);
+  });
+
   it("owns Anthropic-style replay policy for Claude Bedrock models", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 

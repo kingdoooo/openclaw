@@ -271,6 +271,11 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
   // initialization during test bootstrap cannot trip TDZ reads.
   const providerId = "amazon-bedrock";
   const claude46ModelRe = /claude-(?:opus|sonnet)-4(?:\.|-)6(?:$|[-.])/i;
+  // Opus 4.7 requires thinking.type:'adaptive' + output_config.effort on AWS
+  // Bedrock; old type:'enabled' + budget_tokens returns 400 ValidationException.
+  // Exposes the full 8-level thinking profile (incl. xhigh, max) to match the
+  // Anthropic direct-API surface; pi-ai already emits the correct payload shape.
+  const claudeOpus47ModelRe = /claude-opus-4(?:\.|-)7(?:$|[-.])/i;
   // Match region from bedrock-runtime (Converse API) URLs.
   // e.g. https://bedrock-runtime.us-east-1.amazonaws.com
   const bedrockRegionRe = /bedrock-runtime\.([a-z0-9-]+)\.amazonaws\./;
@@ -452,16 +457,36 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
       }
       return undefined;
     },
-    resolveThinkingProfile: ({ modelId }) => ({
-      levels: [
-        { id: "off" },
-        { id: "minimal" },
-        { id: "low" },
-        { id: "medium" },
-        { id: "high" },
-        ...(claude46ModelRe.test(modelId.trim()) ? [{ id: "adaptive" as const }] : []),
-      ],
-      defaultLevel: claude46ModelRe.test(modelId.trim()) ? "adaptive" : undefined,
-    }),
+    resolveThinkingProfile: ({ modelId }) => {
+      const normalized = modelId.trim();
+      if (claudeOpus47ModelRe.test(normalized)) {
+        return {
+          levels: [
+            { id: "off" },
+            { id: "minimal" },
+            { id: "low" },
+            { id: "medium" },
+            { id: "high" },
+            { id: "xhigh" as const },
+            { id: "adaptive" as const },
+            { id: "max" as const },
+          ],
+          // AWS model card: Opus 4.7 keeps thinking off unless explicitly
+          // enabled; callers must pass thinking.type:'adaptive' to turn it on.
+          defaultLevel: "off",
+        };
+      }
+      return {
+        levels: [
+          { id: "off" },
+          { id: "minimal" },
+          { id: "low" },
+          { id: "medium" },
+          { id: "high" },
+          ...(claude46ModelRe.test(normalized) ? [{ id: "adaptive" as const }] : []),
+        ],
+        defaultLevel: claude46ModelRe.test(normalized) ? "adaptive" : undefined,
+      };
+    },
   });
 }
